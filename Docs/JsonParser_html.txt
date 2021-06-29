@@ -1,0 +1,356 @@
+This is the text taken from https://medium.com/swlh/excel-vba-parse-json-easily-c2213f4d8e7a
+where the JsonParser scripts came from. It documents how to use JsonParser and is where the scripts came from.
+Putting it here incase the webpage is removed someday.
+
+To process json data in VBA, there are very few choices. They are scant, really. And there is nothing built into VBA, like the Javascript function, JSON.parse(). So how do we process json data in VBA?
+A makeshift tactic that many have used is to fire up the Script Control or the Webbrowser control or automate a silent instantiation of Internet Explorer with the aim of having Javascript executed in those environments evaluate the json string and through a convoluted process make key/value pairs of data available to VBA. This can work, but this method has drawbacks. Evaluation of a json string can be a security liability because Javascript’s eval() function has access to the hard drive. This liability can be mostly limited by utilizing Crockford’s JSON2.js, but now the process of having Javascript parse the json string is even more convoluted and in the end eval() is still used to create actual Javascript objects from the json, but only after a bunch of checks to ensure that the json will not do anything untoward.
+There are indeed a few great VBA libraries, VBA-JSON for example, that can be loaded into your project that will parse json, allowing easy access to the data. But these are all huge code bases that can seem like overkill.
+And of course, there is PowerQuery. But if you don’t know PQ, this can be quite intimidating.
+The only other option is to write your own VBA routine to parse out the values from a json string or file. However, this gets tricky, especially for generic json that you are not looking at when you craft your VBA routine, and especially for deeply nested json.
+But we can do it in VBA and it can be small, fast, and easy to use:
+Function ParseJSON(json$, Optional key$ = "obj") As Object
+    p = 1
+    token = Tokenize(json)
+    Set dic = CreateObject("Scripting.Dictionary")
+    If token(p) = "{" Then ParseObj key Else ParseArr key
+    Set ParseJSON = dic
+End Function
+
+Function ParseObj(key$)
+    Do: p = p + 1
+        Select Case token(p)
+            Case "]"
+            Case "[":  ParseArr key
+            Case "{"
+                       If token(p + 1) = "}" Then
+                           p = p + 1
+                           dic.Add key, "null"
+                       Else
+                           ParseObj key
+                       End If
+                
+            Case "}":  key = ReducePath(key): Exit Do
+            Case ":":  key = key & "." & token(p - 1)
+            Case ",":  key = ReducePath(key)
+            Case Else: If token(p + 1) <> ":" Then dic.Add key, token(p)
+        End Select
+    Loop
+End Function
+
+Function ParseArr(key$)
+    Dim e&
+    Do: p = p + 1
+        Select Case token(p)
+            Case "}"
+            Case "{":  ParseObj key & ArrayID(e)
+            Case "[":  ParseArr key
+            Case "]":  Exit Do
+            Case ":":  key = key & ArrayID(e)
+            Case ",":  e = e + 1
+            Case Else: dic.Add key & ArrayID(e), token(p)
+        End Select
+    Loop
+End Function
+And that’s it.
+Of course, the above uses a few helper routines (included below), but I wanted to show how concise the logic is. There will be unusual edge cases where this breaks, but I’ve tested it on hundreds of json files, from simple to deeply nested and it has never failed yet.
+It is extremely fast. It’s instantaneous on typical web API json response strings. It takes less than a second to process a megabyte-sized file.
+It produces a dictionary where the dictionary keys are full textual paths to every data value in the source json string, making access a breeze.
+Take the following tiny json string as an example:
+{
+ "data" : {
+   "receipt_time" : "2018-09-28T10:00:00.000Z",
+   "site" : "Los Angeles",
+   "measures" : [ {
+      "test_id" : "C23_PV",
+      "metrics" : [ {
+          "val1" : [ 0.76, 0.75, 0.71 ],
+          "temp" : [ 0, 2, 5 ],
+          "TS" : [ 1538128801336, 1538128810408, 1538128818420 ]
+        } ]
+     }, 
+  {
+          "test_id" : "HBI2_XX",
+          "metrics" : [ {
+          "val1" : [ 0.65, 0.71 ],
+          "temp" : [ 1, -7],
+          "TS" : [ 1538128828433, 1538128834541 ]
+          } ]
+     }]
+  }
+}
+We can list every path, key and data item like so:
+Set dic = ParseJSON(Selection)
+Debug.Print ListPaths(dic)
+The above uses a helper function, ListPaths(). It is included below, but the simple code here prints the following in the VBEditor Immediate Window:
+obj.data.receipt_time --> 2018-09-28T10:00:00.000Z
+obj.data.site --> Los Angeles
+obj.data.measures(0).test_id --> C23_PV
+obj.data.measures(0).metrics(0).val1(0) --> 0.76
+obj.data.measures(0).metrics(0).val1(1) --> 0.75
+obj.data.measures(0).metrics(0).val1(2) --> 0.71
+obj.data.measures(0).metrics(0).temp(0) --> 0
+obj.data.measures(0).metrics(0).temp(1) --> 2
+obj.data.measures(0).metrics(0).temp(2) --> 5
+obj.data.measures(0).metrics(0).TS(0) --> 1538128801336
+obj.data.measures(0).metrics(0).TS(1) --> 1538128810408
+obj.data.measures(0).metrics(0).TS(2) --> 1538128818420
+obj.data.measures(1).test_id --> HBI2_XX
+obj.data.measures(1).metrics(0).val1(0) --> 0.65
+obj.data.measures(1).metrics(0).val1(1) --> 0.71
+obj.data.measures(1).metrics(0).temp(0) --> 1
+obj.data.measures(1).metrics(0).temp(1) --> -7
+obj.data.measures(1).metrics(0).TS(0) --> 1538128828433
+obj.data.measures(1).metrics(0).TS(1) --> 1538128834541
+And you can get at any item by using the full path:
+MsgBox dic("obj.data.measures(0).metrics(0).temp(2)") '<--displays: 5
+Or you can filter items to an array:
+v = GetFilteredValues(dic, "*.metrics*")
+You might be wondering how this is even possible. At first glance it does not appear that the three main functions listed at the top actually do much. But they do! They work because ParseObj() and ParseArr() are recursive… which means they can and do call themselves and each other, over and over, as they work through the entire json string.
+Some real magic happens in a support function called, Tokenize(). It processes the source json string into a list of tokens and that list of tokens is what is actually parsed by the recursive functions above. After tokenizing the source json string, Tokenize() returns an array that has one token in each element. The above json looks like the following after being tokenized (every line in the following listing is an element in the array returned):
+{
+data
+:
+{
+receipt_time
+:
+2018-09-28T10:00:00.000Z
+,
+site
+:
+Los Angeles
+,
+measures
+:
+[
+{
+test_id
+:
+C23_PV
+,
+metrics
+:
+[
+{
+val1
+:
+[
+0.76
+,
+0.75
+,
+0.71
+]
+,
+temp
+:
+[
+0
+,
+2
+,
+5
+]
+,
+TS
+:
+[
+1538128801336
+,
+1538128810408
+,
+1538128818420
+]
+}
+]
+}
+,
+{
+test_id
+:
+HBI2_XX
+,
+metrics
+:
+[
+{
+val1
+:
+[
+0.65
+,
+0.71
+]
+,
+temp
+:
+[
+1
+,
+-7
+]
+,
+TS
+:
+[
+1538128828433
+,
+1538128834541
+]
+}
+]
+}
+]
+}
+}
+And then from that array, the recursive functions are able to compile the paths, keys and data values and add them to the dictionary.
+So the Tokenize() function eliminates all nonessential white space, removes quotes from quoted items (but leaves all escaped characters in place) and isolates every token. This can easily be done in VBA code, but it is more than 100 times quicker to have a RegEx pattern match what we need. The following Tokenize() function uses VBScript’s regex engine to do the heavy lifting:
+Function Tokenize(s$)
+    Const Pattern = """(([^""\\]|\\.)*)""|[+\-]?(?:0|[1-9]\d*)(?:\.\d*)?(?:[eE][+\-]?\d+)?|\w+|[^\s""']+?"
+    Tokenize = RExtract(s, Pattern, True)
+End Function
+Function RExtract(s$, Pattern, Optional bGroup1Bias As Boolean, Optional bGlobal As Boolean = True)
+  Dim c&, m, n, v
+  With CreateObject("vbscript.regexp")
+    .Global = bGlobal
+    .MultiLine = False
+    .IgnoreCase = True
+    .Pattern = Pattern
+    If .TEST(s) Then
+      Set m = .Execute(s)
+      ReDim v(1 To m.Count)
+      For Each n In m
+        c = c + 1
+        v(c) = n.value
+        If bGroup1Bias Then If Len(n.submatches(0)) Or n.value = """""" Then v(c) = n.submatches(0)
+      Next
+    End If
+  End With
+  RExtract = v
+End Function
+Granted, the regex matching pattern looks intimidating, but it is actually extremely efficient. When given a source json string (and it does not matter if the string is pretty-printed, normal, or minified), it instantly (less than a millisecond) matches the bits we want and transforms the entire string into the tokenized array listing shown above.
+So here is the full listing of our VBA JSON Parser including support functions:
+'-------------------------------------------------------------------
+' VBA JSON Parser
+'-------------------------------------------------------------------
+Option Explicit
+Private p&, token, dic
+Function ParseJSON(json$, Optional key$ = "obj") As Object
+    p = 1
+    token = Tokenize(json)
+    Set dic = CreateObject("Scripting.Dictionary")
+    If token(p) = "{" Then ParseObj key Else ParseArr key
+    Set ParseJSON = dic
+End Function
+Function ParseObj(key$)
+    Do: p = p + 1
+        Select Case token(p)
+            Case "]"
+            Case "[":  ParseArr key
+            Case "{"
+                       If token(p + 1) = "}" Then
+                           p = p + 1
+                           dic.Add key, "null"
+                       Else
+                           ParseObj key
+                       End If
+                
+            Case "}":  key = ReducePath(key): Exit Do
+            Case ":":  key = key & "." & token(p - 1)
+            Case ",":  key = ReducePath(key)
+            Case Else: If token(p + 1) <> ":" Then dic.Add key, token(p)
+        End Select
+    Loop
+End Function
+Function ParseArr(key$)
+    Dim e&
+    Do: p = p + 1
+        Select Case token(p)
+            Case "}"
+            Case "{":  ParseObj key & ArrayID(e)
+            Case "[":  ParseArr key
+            Case "]":  Exit Do
+            Case ":":  key = key & ArrayID(e)
+            Case ",":  e = e + 1
+            Case Else: dic.Add key & ArrayID(e), token(p)
+        End Select
+    Loop
+End Function
+'-------------------------------------------------------------------
+' Support Functions
+'-------------------------------------------------------------------
+Function Tokenize(s$)
+    Const Pattern = """(([^""\\]|\\.)*)""|[+\-]?(?:0|[1-9]\d*)(?:\.\d*)?(?:[eE][+\-]?\d+)?|\w+|[^\s""']+?"
+    Tokenize = RExtract(s, Pattern, True)
+End Function
+Function RExtract(s$, Pattern, Optional bGroup1Bias As Boolean, Optional bGlobal As Boolean = True)
+  Dim c&, m, n, v
+  With CreateObject("vbscript.regexp")
+    .Global = bGlobal
+    .MultiLine = False
+    .IgnoreCase = True
+    .Pattern = Pattern
+    If .TEST(s) Then
+      Set m = .Execute(s)
+      ReDim v(1 To m.Count)
+      For Each n In m
+        c = c + 1
+        v(c) = n.value
+        If bGroup1Bias Then If Len(n.submatches(0)) Or n.value = """""" Then v(c) = n.submatches(0)
+      Next
+    End If
+  End With
+  RExtract = v
+End Function
+Function ArrayID$(e)
+    ArrayID = "(" & e & ")"
+End Function
+Function ReducePath$(key$)
+    If InStr(key, ".") Then ReducePath = Left(key, InStrRev(key, ".") - 1) Else ReducePath = key
+End Function
+Function ListPaths(dic)
+    Dim s$, v
+    For Each v In dic
+        s = s & v & " --> " & dic(v) & vbLf
+    Next
+    Debug.Print s
+End Function
+Function GetFilteredValues(dic, match)
+    Dim c&, i&, v, w
+    v = dic.keys
+    ReDim w(1 To dic.Count)
+    For i = 0 To UBound(v)
+        If v(i) Like match Then
+            c = c + 1
+            w(c) = dic(v(i))
+        End If
+    Next
+    ReDim Preserve w(1 To c)
+    GetFilteredValues = w
+End Function
+Function GetFilteredTable(dic, cols)
+    Dim c&, i&, j&, v, w, z
+    v = dic.keys
+    z = GetFilteredValues(dic, cols(0))
+    ReDim w(1 To UBound(z), 1 To UBound(cols) + 1)
+    For j = 1 To UBound(cols) + 1
+         z = GetFilteredValues(dic, cols(j - 1))
+         For i = 1 To UBound(z)
+            w(i, j) = z(i)
+         Next
+    Next
+    GetFilteredTable = w
+End Function
+Function OpenTextFile$(f)
+    With CreateObject("ADODB.Stream")
+        .Charset = "utf-8"
+        .Open
+        .LoadFromFile f
+        OpenTextFile = .ReadText
+    End With
+End Function
+This code makes no attempt to verify if the source json is valid. It will raise a runtime error if the json is invalid. But virtually all json data I work with is valid from the get go.
+This code also does not attempt to convert values into data types. So that no false assumptions are introduced, all values remain string values. The data types can be converted by your code easily if you need or want that.
+In a similar vein, all escaped characters are untouched.
+Also, the code does not attempt to build complex objects in VBA. Instead every single full path including the final key is stored AS TEXT in the dictionary as a dictionary key to the actual data item. This can simplify programmatic access to the data… a lot.
+And finally, this code just parses JSON. There are no routines included here to create a json string from your data. This article is about reading json data from VBA.
+Please let me know your thoughts in the comments
