@@ -1,0 +1,17 @@
+*.txt
+*.bak
+*.xlsx
+*.csv
+venv/
+dist/
+.env
+__pycache__
+*egg-info
+
+# C extensions
+*.so
+
+# config files
+*.ini
+settings.json
+.idea/
